@@ -14,10 +14,10 @@ met een cc naar jezelf.
 ## Installatie op de Pi
 
 ```bash
-sudo mkdir -p /opt/laadoverzicht /mnt/docker-data/laadoverzicht
-sudo chown -R $USER /opt/laadoverzicht /mnt/docker-data/laadoverzicht
-git clone <repo-url> /opt/laadoverzicht
-cd /opt/laadoverzicht
+sudo mkdir -p /mnt/docker-data/laadoverzicht/output
+sudo chown -R $USER:$USER /mnt/docker-data/laadoverzicht
+git clone https://github.com/arjanassink1978/laadoverzicht.git ~/laadoverzicht
+cd ~/laadoverzicht
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
@@ -49,12 +49,12 @@ Opties: `--month YYYY-MM` (standaard vorige maand), `--dry-run` (xlsx maken, nie
 4. Kopieer het wachtwoord van 16 tekens naar `GMAIL_APP_PASSWORD` in `.env` (spaties mogen weg).
    `GMAIL_USER` is je Gmail-adres.
 
-## Cron: elke 1e van de maand om 07:00
+## Cron: elke 1e van de maand om 08:00
 
 `crontab -e`:
 
 ```cron
-0 7 1 * * /opt/laadoverzicht/.venv/bin/python /opt/laadoverzicht/laadoverzicht.py >> /mnt/docker-data/laadoverzicht/cron.log 2>&1
+0 8 1 * * /home/arjan/laadoverzicht/.venv/bin/python /home/arjan/laadoverzicht/laadoverzicht.py >> /mnt/docker-data/laadoverzicht/cron.log 2>&1
 ```
 
 Alle paden zijn absoluut; het script leest `.env` uit de map van het script, dus de werkmap van cron doet er niet toe.
