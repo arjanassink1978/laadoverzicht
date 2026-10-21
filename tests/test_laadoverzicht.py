@@ -178,6 +178,7 @@ def test_mail_content(tmp_path, api):
     assert msg["To"] == "werkgever@example.com" and msg["Cc"] == "me@gmail.com"
     body = msg.get_body().get_content()
     assert "oktober 2026" in body and "€ 2,75" in body
+    assert "Totaal: 10,00 kWh" in body
     att = next(msg.iter_attachments())
     assert att.get_filename() == "declaratie Jan laadpaal oktober 2026.xlsx"
     assert path.name == att.get_filename() and path.parent == tmp_path
@@ -369,3 +370,19 @@ def test_dynamic_vat_and_energy_tax(tmp_path, dyn):
     # zonder btw
     _, _, total = lo.run(dyn_cfg(tmp_path, DYNAMIC_MARKUP="0", ENERGY_TAX="0.10", VAT="0"), 2026, 10, dry_run=True)
     assert total == Decimal("1.80")
+
+
+def test_number_nl():
+    assert lo.number_nl(Decimal("176.19")) == "176,19"
+    assert lo.number_nl(Decimal("1234.5")) == "1.234,50"
+    assert lo.number_nl(Decimal("2"), 3) == "2,000"
+
+
+def test_mail_kwh_decimal_comma(tmp_path):
+    xlsx = tmp_path / "x.xlsx"
+    xlsx.write_bytes(b"x")
+    with mock.patch.object(lo.smtplib, "SMTP") as smtp_cls:
+        lo.send_mail(make_cfg(tmp_path), 2026, 10, xlsx, Decimal("48.46"), Decimal("176.19"), 3)
+    msg = smtp_cls.return_value.__enter__.return_value.send_message.call_args.args[0]
+    body = msg.get_body().get_content()
+    assert "Totaal: 176,19 kWh" in body and "€ 48,46" in body

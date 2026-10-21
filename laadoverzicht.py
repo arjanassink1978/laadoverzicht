@@ -260,7 +260,7 @@ def block_cost(begin, end, kwh, prices, cfg):
         share = Decimal(str((nxt - t).total_seconds() / seconds)) if seconds > 0 else Decimal(1)
         if slot not in prices:
             raise PriceError(f"geen marktprijs voor {slot.astimezone(TZ):%d-%m-%Y %H:%M} (uur van sessie met "
-                             f"{kwh:.3f} kWh); gebruik RATE_MODE=fixed of probeer later opnieuw")
+                             f"{number_nl(kwh, 3)} kWh); gebruik RATE_MODE=fixed of probeer later opnieuw")
         cost += kwh * share * dynamic_rate(prices[slot], cfg)
         if nxt >= end:
             return cost
@@ -326,9 +326,13 @@ def build_xlsx(cfg, year, month, sessions, path, prices=None):
     return total_kwh, total_cost
 
 
+def number_nl(value, decimals=2):
+    s = f"{value:,.{decimals}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def euro_nl(value):
-    s = f"{value:,.2f}"
-    return "€ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return "€ " + number_nl(value)
 
 
 def send_mail(cfg, year, month, xlsx_path, total_cost, total_kwh, count):
@@ -343,7 +347,7 @@ def send_mail(cfg, year, month, xlsx_path, total_cost, total_kwh, count):
         f"{greeting}\n\nIn de bijlage het laadoverzicht van {month_label(year, month)}.\n\n"
         f"Maand: {month_label(year, month)}\n"
         f"Aantal laadsessies: {count}\n"
-        f"Totaal: {total_kwh:.2f} kWh\n"
+        f"Totaal: {number_nl(total_kwh)} kWh\n"
         f"Totaalbedrag: {euro_nl(total_cost)}\n\n"
         f"Met vriendelijke groet,\n{cfg['owner']}\n"
     )
