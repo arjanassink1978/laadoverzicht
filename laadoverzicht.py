@@ -78,7 +78,7 @@ def load_config(env=None):
         "gmail_password": get("GMAIL_APP_PASSWORD"),
         "mail_to": get("MAIL_TO"),
         "mail_to_name": get("MAIL_TO_NAME"),
-        "owner": get("OWNER_NAME", "Arjan"),
+        "owner": get("OWNER_NAME"),
         "output_dir": Path(get("OUTPUT_DIR", str(BASE_DIR / "output"))),
     }
     cfg["mail_cc"] = get("MAIL_CC") or cfg["gmail_user"]
@@ -93,10 +93,10 @@ def load_config(env=None):
 
 
 def validate(cfg, dry_run):
-    required = ["zaptec_username", "zaptec_password"]
+    required = ["zaptec_username", "zaptec_password", "owner"]
     if not dry_run:
         required += ["gmail_user", "gmail_password", "mail_to"]
-    names = {"zaptec_username": "ZAPTEC_USERNAME", "zaptec_password": "ZAPTEC_PASSWORD",
+    names = {"zaptec_username": "ZAPTEC_USERNAME", "zaptec_password": "ZAPTEC_PASSWORD", "owner": "OWNER_NAME",
              "gmail_user": "GMAIL_USER", "gmail_password": "GMAIL_APP_PASSWORD", "mail_to": "MAIL_TO"}
     missing = [names[k] for k in required if not cfg[k]]
     if missing:

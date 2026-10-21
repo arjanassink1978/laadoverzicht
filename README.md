@@ -52,7 +52,7 @@ Instellingen komen uit `.env` naast het script, of uit environment-variabelen (d
 | `MAIL_TO_NAME` | nee | leeg | Naam voor de aanhef: `Piet` geeft `Beste Piet,`; leeg geeft `Beste,` |
 | `MAIL_CC` | nee | `GMAIL_USER` | cc-adres |
 | `RATE` | nee | `0.27505` | Tarief in EUR per kWh incl. btw, zie [Tarief](#tarief) |
-| `OWNER_NAME` | nee, maar aan te raden | `Arjan` | Jouw naam in onderwerp, bestandsnaam en kop. Zet hier je eigen naam neer. |
+| `OWNER_NAME` | ja, ook bij `--dry-run` | | Jouw naam in onderwerp, bestandsnaam en kop. Geen standaardwaarde; zonder dit veld stopt het script met een foutmelding. |
 | `OUTPUT_DIR` | nee | map `output` naast het script | Map voor de xlsx; gebruik een absoluut pad |
 | `LOG_FILE` | nee | `OUTPUT_DIR/laadoverzicht.log` | Logbestand; gebruik een absoluut pad |
 

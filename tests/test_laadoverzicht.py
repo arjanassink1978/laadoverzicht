@@ -17,7 +17,7 @@ def make_cfg(tmp_path, **over):
     env = {
         "ZAPTEC_USERNAME": "u", "ZAPTEC_PASSWORD": "p",
         "GMAIL_USER": "me@gmail.com", "GMAIL_APP_PASSWORD": "pw",
-        "MAIL_TO": "werkgever@example.com", "OUTPUT_DIR": str(tmp_path),
+        "MAIL_TO": "werkgever@example.com", "OWNER_NAME": "Jan", "OUTPUT_DIR": str(tmp_path),
     }
     env.update(over)
     return REAL_LOAD_CONFIG(env)
@@ -110,7 +110,7 @@ def test_costs_and_total(tmp_path, api):
     assert rows[0][3] == 12.5 and rows[0][4] == 0.27505 and rows[0][5] == 3.44
     assert rows[1][5] == 2.75
     assert rows[2][0] == "Totaal" and rows[2][3] == 22.5 and rows[2][5] == 6.19
-    assert ws["A1"].value == "Laadoverzicht oktober 2026" and ws["B2"].value == "Arjan"
+    assert ws["A1"].value == "Laadoverzicht oktober 2026" and ws["B2"].value == "Jan"
     assert ws["A7"].value.strftime("%d-%m-%Y") == "02-10-2026"
     assert ws["B7"].value.strftime("%H:%M") == "08:00"  # 06:00 UTC = 08:00 zomertijd
 
@@ -129,7 +129,21 @@ def test_cc_defaults_to_gmail_user(tmp_path):
 
 def test_defaults(tmp_path):
     cfg = make_cfg(tmp_path)
-    assert cfg["owner"] == "Arjan" and cfg["rate"] == Decimal("0.27505")
+    assert cfg["owner"] == "Jan" and cfg["rate"] == Decimal("0.27505")
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("value", ["", "  "])
+def test_owner_name_required(tmp_path, value, dry_run):
+    cfg = make_cfg(tmp_path, OWNER_NAME=value)
+    with pytest.raises(lo.ConfigError, match="OWNER_NAME"):
+        lo.validate(cfg, dry_run=dry_run)
+
+
+def test_owner_name_missing():
+    cfg = REAL_LOAD_CONFIG({"ZAPTEC_USERNAME": "u", "ZAPTEC_PASSWORD": "p"})
+    with pytest.raises(lo.ConfigError, match="OWNER_NAME"):
+        lo.validate(cfg, dry_run=True)
 
 
 def test_mail_to_required_but_not_for_dry_run(tmp_path, api):
@@ -140,7 +154,7 @@ def test_mail_to_required_but_not_for_dry_run(tmp_path, api):
 
 
 def test_subject_and_filename(tmp_path):
-    assert lo.subject_for("Arjan", 2026, 10) == "declaratie Arjan laadpaal oktober 2026"
+    assert lo.subject_for("Jan", 2026, 10) == "declaratie Jan laadpaal oktober 2026"
     assert lo.subject_for("Piet", 2027, 3) == "declaratie Piet laadpaal maart 2027"
 
 
@@ -152,7 +166,7 @@ def run_with_smtp(cfg, api, dry_run=False):
 
 
 def test_mail_content(tmp_path, api):
-    (path, _, _), smtp_cls = run_with_smtp(make_cfg(tmp_path, OWNER_NAME="Arjan"), api)
+    (path, _, _), smtp_cls = run_with_smtp(make_cfg(tmp_path, OWNER_NAME="Jan"), api)
     smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=lo.TIMEOUT)
     smtp = smtp_cls.return_value.__enter__.return_value
     smtp.starttls.assert_called_once()
@@ -160,12 +174,12 @@ def test_mail_content(tmp_path, api):
     sent = smtp.send_message.call_args
     msg = sent.args[0]
     assert sent.kwargs["to_addrs"] == ["werkgever@example.com", "me@gmail.com"]
-    assert msg["Subject"] == "declaratie Arjan laadpaal oktober 2026"
+    assert msg["Subject"] == "declaratie Jan laadpaal oktober 2026"
     assert msg["To"] == "werkgever@example.com" and msg["Cc"] == "me@gmail.com"
     body = msg.get_body().get_content()
     assert "oktober 2026" in body and "€ 2,75" in body
     att = next(msg.iter_attachments())
-    assert att.get_filename() == "declaratie Arjan laadpaal oktober 2026.xlsx"
+    assert att.get_filename() == "declaratie Jan laadpaal oktober 2026.xlsx"
     assert path.name == att.get_filename() and path.parent == tmp_path
     assert att.get_content() == path.read_bytes()
 
@@ -190,7 +204,7 @@ def test_attachment_filename_survives_serialisation(tmp_path, api):
     msg = smtp_cls.return_value.__enter__.return_value.send_message.call_args.args[0]
     parsed = message_from_bytes(msg.as_bytes(), policy=policy.default)
     att = next(parsed.iter_attachments())
-    assert att.get_filename() == "declaratie Arjan laadpaal oktober 2026.xlsx"
+    assert att.get_filename() == "declaratie Jan laadpaal oktober 2026.xlsx"
     assert att.get_content_type() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -215,7 +229,7 @@ def test_main_dry_run_cli(tmp_path, api, monkeypatch):
     with mock.patch.object(lo.smtplib, "SMTP") as smtp_cls:
         assert lo.main(["--month", "2026-10", "--dry-run"]) == 0
     smtp_cls.assert_not_called()
-    assert (tmp_path / "declaratie Arjan laadpaal oktober 2026.xlsx").exists()
+    assert (tmp_path / "declaratie Jan laadpaal oktober 2026.xlsx").exists()
     assert (tmp_path / "laadoverzicht.log").exists()
 
 
