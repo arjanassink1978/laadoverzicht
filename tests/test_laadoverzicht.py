@@ -170,6 +170,18 @@ def test_mail_content(tmp_path, api):
     assert att.get_content() == path.read_bytes()
 
 
+def test_greeting_with_recipient_name(tmp_path, api):
+    _, smtp_cls = run_with_smtp(make_cfg(tmp_path, MAIL_TO_NAME="Wim"), api)
+    msg = smtp_cls.return_value.__enter__.return_value.send_message.call_args.args[0]
+    assert msg.get_body().get_content().startswith("Beste Wim,\n")
+
+
+def test_greeting_without_recipient_name(tmp_path, api):
+    _, smtp_cls = run_with_smtp(make_cfg(tmp_path, MAIL_TO_NAME=""), api)
+    msg = smtp_cls.return_value.__enter__.return_value.send_message.call_args.args[0]
+    assert msg.get_body().get_content().startswith("Beste,\n")
+
+
 def test_attachment_filename_survives_serialisation(tmp_path, api):
     """Spaties in de bijlagenaam moeten na verzenden (RFC 2231/quoted) heel blijven."""
     run_with_smtp(make_cfg(tmp_path), api)

@@ -65,7 +65,7 @@ Het script logt zelf naar `LOG_FILE` (standaard `OUTPUT_DIR/laadoverzicht.log`) 
 
 Uit `.env` naast het script, of uit environment-variabelen (die winnen van `.env`). Zie `.env.example` voor uitleg per veld:
 `ZAPTEC_USERNAME`, `ZAPTEC_PASSWORD`, `ZAPTEC_CHARGER_ID` (optioneel), `GMAIL_USER`, `GMAIL_APP_PASSWORD`,
-`MAIL_TO` (verplicht, behalve bij `--dry-run`), `MAIL_CC` (leeg = `GMAIL_USER`), `RATE`, `OWNER_NAME`, `OUTPUT_DIR`, `LOG_FILE`.
+`MAIL_TO` (verplicht, behalve bij `--dry-run`), `MAIL_TO_NAME` (optioneel, naam in de aanhef: `Beste Wim,`; leeg = `Beste,`), `MAIL_CC` (leeg = `GMAIL_USER`), `RATE`, `OWNER_NAME`, `OUTPUT_DIR`, `LOG_FILE`.
 
 `.env` staat in `.gitignore`; commit nooit echte geheimen.
 

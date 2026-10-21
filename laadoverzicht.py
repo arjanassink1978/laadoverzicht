@@ -77,6 +77,7 @@ def load_config(env=None):
         "gmail_user": get("GMAIL_USER"),
         "gmail_password": get("GMAIL_APP_PASSWORD"),
         "mail_to": get("MAIL_TO"),
+        "mail_to_name": get("MAIL_TO_NAME"),
         "owner": get("OWNER_NAME", "Arjan"),
         "output_dir": Path(get("OUTPUT_DIR", str(BASE_DIR / "output"))),
     }
@@ -221,8 +222,9 @@ def send_mail(cfg, year, month, xlsx_path, total_cost, total_kwh, count):
     msg["To"] = cfg["mail_to"]
     msg["Cc"] = cfg["mail_cc"]
     msg["Subject"] = subject
+    greeting = f"Beste {cfg['mail_to_name']}," if cfg.get("mail_to_name") else "Beste,"
     msg.set_content(
-        f"Beste,\n\nIn de bijlage het laadoverzicht van {month_label(year, month)}.\n\n"
+        f"{greeting}\n\nIn de bijlage het laadoverzicht van {month_label(year, month)}.\n\n"
         f"Maand: {month_label(year, month)}\n"
         f"Aantal laadsessies: {count}\n"
         f"Totaal: {total_kwh:.2f} kWh\n"
