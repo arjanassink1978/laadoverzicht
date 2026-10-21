@@ -5,7 +5,7 @@ import logging
 import os
 import smtplib
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from email.message import EmailMessage
 from pathlib import Path
@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment, Font
 BASE_DIR = Path(__file__).resolve().parent
 TOKEN_URL = "https://api.zaptec.com/oauth/token"
 HISTORY_URL = "https://api.zaptec.com/api/chargehistory"
+PRICES_URL = "https://api.energyzero.nl/v1/energyprices"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 TZ = ZoneInfo("Europe/Amsterdam")
@@ -35,6 +36,10 @@ log = logging.getLogger("laadoverzicht")
 
 class ConfigError(Exception):
     pass
+
+
+class PriceError(Exception):
+    """Marktprijzen ontbreken of zijn onbruikbaar; de run faalt liever dan te gokken."""
 
 
 def previous_month(today=None):
@@ -88,6 +93,20 @@ def load_config(env=None):
         raise ConfigError(f"RATE is geen geldig getal: {get('RATE')!r}")
     if cfg["rate"] < 0:
         raise ConfigError("RATE mag niet negatief zijn")
+    cfg["rate_mode"] = get("RATE_MODE", "fixed").lower()
+    if cfg["rate_mode"] not in ("fixed", "dynamic"):
+        raise ConfigError(f"RATE_MODE moet 'fixed' of 'dynamic' zijn: {get('RATE_MODE')!r}")
+    # Energiebelasting elektriciteit 2026, schijf 1 (t/m 10.000 kWh): EUR 0,1108481 incl. btw
+    # = EUR 0,09161 excl. btw per kWh (bron: Belastingdienst, tarieven 2026). Pas jaarlijks aan.
+    for key, name, default in (("dynamic_markup", "DYNAMIC_MARKUP", "0"),
+                               ("energy_tax", "ENERGY_TAX", "0.09161"),
+                               ("vat", "VAT", "0.21")):
+        try:
+            cfg[key] = Decimal(get(name, default).replace(",", "."))
+        except Exception:
+            raise ConfigError(f"{name} is geen geldig getal: {get(name)!r}")
+    if cfg["energy_tax"] < 0 or cfg["vat"] < 0:
+        raise ConfigError("ENERGY_TAX en VAT mogen niet negatief zijn")
     cfg["log_file"] = Path(get("LOG_FILE")) if get("LOG_FILE") else cfg["output_dir"] / "laadoverzicht.log"
     return cfg
 
@@ -122,7 +141,19 @@ def parse_dt(value):
     return dt
 
 
-def fetch_sessions(cfg, year, month, token=None):
+def parse_details(raw):
+    """EnergyDetails als oplopende lijst (tijdstip UTC, cumulatieve kWh); onleesbare punten vervallen."""
+    points = []
+    for p in raw or []:
+        ts = p.get("Timestamp") or p.get("timestamp")
+        en = p.get("Energy") if p.get("Energy") is not None else p.get("energy")
+        if ts is None or en is None:
+            continue
+        points.append((parse_dt(ts), Decimal(str(en))))
+    return sorted(points, key=lambda p: p[0])
+
+
+def fetch_sessions(cfg, year, month, token=None, details=False):
     """Alle laadsessies die in de maand zijn gestart, oplopend gesorteerd."""
     start, end = month_bounds(year, month)
     token = token or get_token(cfg)
@@ -130,6 +161,8 @@ def fetch_sessions(cfg, year, month, token=None):
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     params = {"From": start.strftime(fmt), "To": end.strftime(fmt), "PageSize": PAGE_SIZE,
               "SortDescending": "false"}
+    if details:
+        params["DetailLevel"] = 1  # EnergyDetails: cumulatieve kWh-meetpunten per sessie
     if cfg["charger_id"]:
         params["ChargerId"] = cfg["charger_id"]
     sessions, seen, page = [], set(), 0
@@ -151,6 +184,7 @@ def fetch_sessions(cfg, year, month, token=None):
                 "end": e.astimezone(TZ),
                 "kwh": Decimal(str(item.get("Energy") or 0)),
                 "charger": item.get("DeviceName") or item.get("ChargerId") or "",
+                "details": parse_details(item.get("EnergyDetails")) if details else [],
             })
         if len(data) < PAGE_SIZE:
             break
@@ -169,8 +203,90 @@ def priced(sessions, rate):
     return rows, sum((r["kwh"] for r in rows), Decimal(0)), sum((r["cost"] for r in rows), Decimal(0))
 
 
-def build_xlsx(cfg, year, month, sessions, path):
-    rows, total_kwh, total_cost = priced(sessions, cfg["rate"])
+HOUR = timedelta(hours=1)
+
+
+def fetch_prices(sessions, year, month):
+    """Day-ahead marktprijzen (EUR/kWh excl. btw) per uur als {begin uur (UTC): prijs}.
+
+    Bron: EnergyZero (https://api.energyzero.nl/v1/energyprices), gratis en zonder API-sleutel.
+    De API levert uurprijzen (interval=4); sinds de overgang van EPEX naar kwartierprijzen
+    (okt 2025) zijn dat gemiddelden van de vier kwartieren. Kwartierprijzen biedt de API niet.
+    """
+    start, end = month_bounds(year, month)
+    # Een sessie kan na middernacht van de maand doorlopen; haal die uren ook op.
+    end = max([end] + [s["end"].astimezone(timezone.utc) for s in sessions]) + HOUR
+    fmt = "%Y-%m-%dT%H:%M:%S.000Z"
+    r = requests.get(PRICES_URL, timeout=TIMEOUT, params={
+        "fromDate": start.strftime(fmt), "tillDate": (end - timedelta(milliseconds=1)).strftime(fmt),
+        "interval": 4, "usageType": 1, "inclBtw": "false"})
+    r.raise_for_status()
+    prices = {}
+    for p in r.json().get("Prices") or []:
+        slot = parse_dt(p["readingDate"])
+        if slot != slot.replace(minute=0, second=0, microsecond=0):
+            raise PriceError(f"prijsbron levert geen uurprijzen (tijdstip {p['readingDate']})")
+        prices[slot] = Decimal(str(p["price"]))
+    return prices
+
+
+def consumption_blocks(session):
+    """Verbruik als [(begin, einde, kWh)]: per Zaptec-meetinterval, anders gelijkmatig over de sessie.
+
+    EnergyDetails zijn cumulatief; het verschil tussen twee punten is het verbruik van dat interval.
+    De intervallen worden geschaald naar de sessie-kWh zodat kosten en kWh-kolom kloppen.
+    """
+    start, end, kwh = session["start"].astimezone(timezone.utc), session["end"].astimezone(timezone.utc), session["kwh"]
+    pts = session.get("details") or []
+    deltas = [(a[0], b[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])]
+    if deltas and all(d[2] >= 0 for d in deltas) and sum(d[2] for d in deltas) > 0:
+        total = sum(d[2] for d in deltas)
+        return [(a, b, d * kwh / total) for a, b, d in deltas]
+    if kwh > 0:
+        log.warning("sessie %s: geen bruikbaar verbruik per interval van Zaptec, kWh gelijkmatig verdeeld over de duur",
+                    session["start"].strftime("%d-%m-%Y %H:%M"))
+    return [(start, end, kwh)]
+
+
+def block_cost(begin, end, kwh, prices, cfg):
+    """Kosten (excl. afronding) van een blok; verdeelt over uurgrenzen naar tijdsduur."""
+    if kwh == 0:
+        return Decimal(0)
+    seconds = (end - begin).total_seconds()
+    cost, t = Decimal(0), begin
+    while True:
+        slot = t.replace(minute=0, second=0, microsecond=0)
+        nxt = min(slot + HOUR, end) if seconds > 0 else end
+        share = Decimal(str((nxt - t).total_seconds() / seconds)) if seconds > 0 else Decimal(1)
+        if slot not in prices:
+            raise PriceError(f"geen marktprijs voor {slot.astimezone(TZ):%d-%m-%Y %H:%M} (uur van sessie met "
+                             f"{kwh:.3f} kWh); gebruik RATE_MODE=fixed of probeer later opnieuw")
+        cost += kwh * share * dynamic_rate(prices[slot], cfg)
+        if nxt >= end:
+            return cost
+        t = nxt
+
+
+def dynamic_rate(market, cfg):
+    """EUR/kWh incl. btw: (marktprijs + opslag + energiebelasting) x (1 + btw)."""
+    return (market + cfg["dynamic_markup"] + cfg["energy_tax"]) * (1 + cfg["vat"])
+
+
+def priced_dynamic(sessions, prices, cfg):
+    """Per sessie kosten op centen; tarief is het gemiddelde EUR/kWh (kosten / kWh)."""
+    rows = []
+    for s in sessions:
+        cost = money(sum((block_cost(a, b, k, prices, cfg) for a, b, k in consumption_blocks(s)), Decimal(0)))
+        rows.append(dict(s, cost=cost, rate=cost / s["kwh"] if s["kwh"] else Decimal(0)))
+    return rows, sum((r["kwh"] for r in rows), Decimal(0)), sum((r["cost"] for r in rows), Decimal(0))
+
+
+def build_xlsx(cfg, year, month, sessions, path, prices=None):
+    dynamic = cfg["rate_mode"] == "dynamic"
+    if dynamic:
+        rows, total_kwh, total_cost = priced_dynamic(sessions, prices, cfg)
+    else:
+        rows, total_kwh, total_cost = priced(sessions, cfg["rate"])
     charger = cfg["charger_id"] or ", ".join(sorted({s["charger"] for s in rows if s["charger"]})) or "Zaptec Go2"
     wb = Workbook()
     ws = wb.active
@@ -184,7 +300,7 @@ def build_xlsx(cfg, year, month, sessions, path):
     for r in (2, 3, 4):
         ws[f"A{r}"].font = bold
     header_row = 6
-    for col, name in enumerate(["Datum", "Starttijd", "Eindtijd", "kWh", "Tarief (EUR/kWh)", "Kosten"], 1):
+    for col, name in enumerate(["Datum", "Starttijd", "Eindtijd", "kWh", "Dynamisch tarief (gem. EUR/kWh)" if dynamic else "Tarief (EUR/kWh)", "Kosten"], 1):
         c = ws.cell(header_row, col, name)
         c.font = bold
         c.alignment = Alignment(horizontal="center")
@@ -195,7 +311,7 @@ def build_xlsx(cfg, year, month, sessions, path):
         ws.cell(r, 2, s["start"].time().replace(microsecond=0, tzinfo=None)).number_format = "hh:mm"
         ws.cell(r, 3, s["end"].time().replace(microsecond=0, tzinfo=None)).number_format = "hh:mm"
         ws.cell(r, 4, float(s["kwh"])).number_format = "0.00"
-        ws.cell(r, 5, float(cfg["rate"])).number_format = '"€" 0.00000'
+        ws.cell(r, 5, float(s["rate"] if dynamic else cfg["rate"])).number_format = '"€" 0.00000'
         ws.cell(r, 6, float(s["cost"])).number_format = '"€" #,##0.00'
     r += 1
     ws.cell(r, 1, "Totaal").font = bold
@@ -203,7 +319,7 @@ def build_xlsx(cfg, year, month, sessions, path):
     kwh.number_format, kwh.font = "0.00", bold
     tot = ws.cell(r, 6, float(total_cost))
     tot.number_format, tot.font = '"€" #,##0.00', bold
-    for col, width in zip("ABCDEF", (14, 11, 11, 10, 18, 12)):
+    for col, width in zip("ABCDEF", (14, 11, 11, 10, 32 if dynamic else 18, 12)):
         ws.column_dimensions[col].width = width
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
@@ -242,10 +358,12 @@ def send_mail(cfg, year, month, xlsx_path, total_cost, total_kwh, count):
 
 def run(cfg, year, month, dry_run=False, token=None):
     validate(cfg, dry_run)
-    sessions = fetch_sessions(cfg, year, month, token)
+    dynamic = cfg["rate_mode"] == "dynamic"
+    sessions = fetch_sessions(cfg, year, month, token, details=dynamic)
     log.info("%d laadsessies in %s", len(sessions), month_label(year, month))
+    prices = fetch_prices(sessions, year, month) if dynamic and sessions else None
     path = cfg["output_dir"] / (subject_for(cfg["owner"], year, month) + ".xlsx")
-    total_kwh, total_cost = build_xlsx(cfg, year, month, sessions, path)
+    total_kwh, total_cost = build_xlsx(cfg, year, month, sessions, path, prices)
     log.info("xlsx geschreven: %s (totaal %s)", path, euro_nl(total_cost))
     if dry_run:
         log.info("dry-run: geen mail verstuurd")

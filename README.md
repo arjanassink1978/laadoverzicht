@@ -16,13 +16,39 @@ met een cc naar jezelf.
 
 - Onderwerp: `declaratie <OWNER_NAME> laadpaal <maand jaar>`, bijv. `declaratie Jan laadpaal oktober 2026`
 - Bijlage en opgeslagen bestand: onderwerp + `.xlsx`, bijv. `declaratie Jan laadpaal oktober 2026.xlsx`
-- Eén tarief (`RATE`) voor alle sessies; geen dal-/nachttarief
+- Eén vast tarief (`RATE`) voor alle sessies, of een dynamisch uurtarief (`RATE_MODE=dynamic`); geen dal-/nachttarief
 - Tijden staan in Europe/Amsterdam; de maandgrenzen ook
 
 ### Tarief
 
-Het tarief is je eigen keuze: neem het all-in kWh-tarief incl. btw uit je energiecontract.
+Er zijn twee modi, in te stellen met `RATE_MODE`.
+
+**Vast tarief (`RATE_MODE=fixed`, standaard).** Het tarief is je eigen keuze: neem het all-in kWh-tarief incl. btw uit je energiecontract.
 De standaardwaarde (EUR 0,27505/kWh) is slechts een voorbeeld en zal niet bij jouw contract passen.
+Een bestaande `.env` zonder de nieuwe velden werkt ongewijzigd door.
+
+**Dynamisch uurtarief (`RATE_MODE=dynamic`).** Voor contracten met een prijs per uur (Tibber, Frank Energie, ANWB, Zonneplan en dergelijke).
+Het script haalt de day-ahead marktprijzen van de maand op bij [EnergyZero](https://api.energyzero.nl/v1/energyprices) (gratis, geen API-sleutel)
+en rekent per uur waarin geladen is:
+
+```
+prijs per kWh = (marktprijs + DYNAMIC_MARKUP + ENERGY_TAX) x (1 + VAT)
+```
+
+- `DYNAMIC_MARKUP`: opslag of inkoopvergoeding van je leverancier per kWh excl. btw (standaard 0). Zoek die op in je contract.
+- `ENERGY_TAX`: energiebelasting op elektriciteit per kWh excl. btw. De standaard is het tarief van 2026 voor schijf 1 (t/m 10.000 kWh): EUR 0,1108481 incl. btw = EUR 0,09161 excl. btw (bron: Belastingdienst). Controleer dit elk jaar en pas het zo nodig aan.
+- `VAT`: btw als fractie, standaard `0.21`.
+- De marktprijzen van EnergyZero zijn uurprijzen. Sinds de overstap van EPEX op kwartierprijzen (oktober 2025) zijn dat gemiddelden van de vier kwartieren; kwartierprijzen biedt de API niet.
+- Verbruik per tijdsblok: het script vraagt bij Zaptec de meetpunten per sessie op (`DetailLevel=1`, `EnergyDetails`) en rekent per meetinterval, verdeeld over de uren waarin dat interval valt. Levert Zaptec voor een sessie geen bruikbare meetpunten, dan wordt de kWh gelijkmatig over de duur van de sessie verdeeld en komt er een waarschuwing in het log.
+- Ontbreekt de marktprijs voor een uur waarin geladen is, dan stopt de run met een foutmelding (exitcode 1) en wordt er niets gemaild. Er wordt niets geschat.
+- In de xlsx toont de kolom tarief het gemiddelde EUR/kWh van de sessie (kosten / kWh) en heet de kop "Dynamisch tarief (gem. EUR/kWh)". De totaalregel blijft hetzelfde.
+
+Voorbeeld `.env`-fragment:
+
+```
+RATE_MODE=dynamic
+DYNAMIC_MARKUP=0.0185
+```
 
 ## Installatie
 
@@ -51,7 +77,11 @@ Instellingen komen uit `.env` naast het script, of uit environment-variabelen (d
 | `MAIL_TO` | ja, behalve bij `--dry-run` | | E-mailadres van de ontvanger |
 | `MAIL_TO_NAME` | nee | leeg | Naam voor de aanhef: `Piet` geeft `Beste Piet,`; leeg geeft `Beste,` |
 | `MAIL_CC` | nee | `GMAIL_USER` | cc-adres |
-| `RATE` | nee | `0.27505` | Tarief in EUR per kWh incl. btw, zie [Tarief](#tarief) |
+| `RATE_MODE` | nee | `fixed` | `fixed` (vast tarief `RATE`) of `dynamic` (dynamisch uurtarief), zie [Tarief](#tarief) |
+| `RATE` | nee | `0.27505` | Vast tarief in EUR per kWh incl. btw; alleen bij `RATE_MODE=fixed` |
+| `DYNAMIC_MARKUP` | nee | `0` | Alleen bij `dynamic`: opslag/inkoopvergoeding leverancier in EUR per kWh excl. btw |
+| `ENERGY_TAX` | nee | `0.09161` | Alleen bij `dynamic`: energiebelasting in EUR per kWh excl. btw (tarief 2026, schijf 1) |
+| `VAT` | nee | `0.21` | Alleen bij `dynamic`: btw als fractie |
 | `OWNER_NAME` | ja, ook bij `--dry-run` | | Jouw naam in onderwerp, bestandsnaam en kop. Geen standaardwaarde; zonder dit veld stopt het script met een foutmelding. |
 | `OUTPUT_DIR` | nee | map `output` naast het script | Map voor de xlsx; gebruik een absoluut pad |
 | `LOG_FILE` | nee | `OUTPUT_DIR/laadoverzicht.log` | Logbestand; gebruik een absoluut pad |
@@ -104,7 +134,7 @@ Controleer na de eerste 1e of de mail aankwam.
 .venv/bin/python -m pytest
 ```
 
-De tests mocken de Zaptec API en SMTP (maandgrenzen, kosten en totaal, cc-standaard, onderwerp en bijlagenaam, dry-run).
+De tests mocken de Zaptec API en SMTP (maandgrenzen, kosten en totaal, cc-standaard, onderwerp en bijlagenaam, dry-run) en de EnergyZero-prijs-API (fixed ongewijzigd, berekening per interval, gelijkmatige verdeling als terugval, ontbrekende prijzen, btw en energiebelasting).
 
 ## Licentie
 

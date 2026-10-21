@@ -1,5 +1,5 @@
 import smtplib
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from email import message_from_bytes, policy
 from pathlib import Path
@@ -241,3 +241,131 @@ def test_main_reports_config_error(tmp_path, monkeypatch):
 def test_parse_month_rejects_garbage():
     with pytest.raises(Exception):
         lo.parse_month("2026-13")
+
+
+# --- dynamisch tarief ---
+
+def price_payload(first_hour, prices):
+    """EnergyZero-antwoord: uurprijzen vanaf first_hour (UTC) oplopend."""
+    t = datetime.fromisoformat(first_hour)
+    return [{"readingDate": (t + timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%SZ"), "price": p}
+            for i, p in enumerate(prices)]
+
+
+@pytest.fixture
+def dyn(api):
+    """Zaptec-mock uit `api` plus gemockte EnergyZero; zet de prijzen in dyn['prices']."""
+    state = {"prices": [], "price_calls": [], "zaptec": api}
+    zaptec_get = lo.requests.get
+
+    def get(url, **kw):
+        if url == lo.PRICES_URL:
+            state["price_calls"].append(kw["params"])
+            return FakeResp({"Prices": state["prices"]})
+        return zaptec_get(url, **kw)
+
+    with mock.patch.object(lo.requests, "get", get):
+        yield state
+
+
+def dyn_cfg(tmp_path, **over):
+    env = {"RATE_MODE": "dynamic", "ENERGY_TAX": "0.10", "VAT": "0.21", "DYNAMIC_MARKUP": "0.02"}
+    env.update(over)
+    return make_cfg(tmp_path, **env)
+
+
+def dyn_item(i, start, end, energy, details):
+    d = item(i, start, end, energy)
+    d["EnergyDetails"] = [{"Timestamp": t, "Energy": e} for t, e in details]
+    return d
+
+
+def test_fixed_mode_default_unchanged(tmp_path, api):
+    cfg = make_cfg(tmp_path)
+    assert cfg["rate_mode"] == "fixed"
+    assert (cfg["dynamic_markup"], cfg["energy_tax"], cfg["vat"]) == (Decimal(0), Decimal("0.09161"), Decimal("0.21"))
+    api["items"] = [item(1, "2026-10-02T06:00:00", "2026-10-02T08:00:00", 10)]
+    lo.run(cfg, 2026, 10, dry_run=True)  # de api-mock faalt bij elke andere URL dan Zaptec, dus geen prijs-API
+    assert "DetailLevel" not in api["calls"][0]
+    ws = load_workbook(next(tmp_path.glob("*.xlsx"))).active
+    assert ws["E6"].value == "Tarief (EUR/kWh)" and ws["E7"].value == 0.27505
+
+
+def test_invalid_rate_mode_and_numbers(tmp_path):
+    for k, v in (("RATE_MODE", "variabel"), ("VAT", "x"), ("ENERGY_TAX", "-1"), ("DYNAMIC_MARKUP", "abc")):
+        with pytest.raises(lo.ConfigError, match=k):
+            make_cfg(tmp_path, **{k: v})
+
+
+def test_dynamic_rate_formula(tmp_path):
+    # (0.08 + 0.02 + 0.10) * 1.21
+    assert lo.dynamic_rate(Decimal("0.08"), dyn_cfg(tmp_path)) == Decimal("0.2420")
+
+
+def test_dynamic_per_interval(tmp_path, dyn):
+    # 10:00-12:00 UTC; 2 kWh in uur 10, 4 kWh in uur 11 (cumulatief 0, 2, 6)
+    dyn["zaptec"]["items"] = [dyn_item(1, "2026-10-02T10:00:00", "2026-10-02T12:00:00", 6, [
+        ("2026-10-02T10:00:00", 0), ("2026-10-02T11:00:00", 2), ("2026-10-02T12:00:00", 6)])]
+    dyn["prices"] = price_payload("2026-10-02T09:00:00", [0.50, 0.10, 0.20])
+    path, kwh, total = lo.run(dyn_cfg(tmp_path), 2026, 10, dry_run=True)
+    # 2*(0.10+0.02+0.10)*1.21 + 4*(0.20+0.02+0.10)*1.21 = 0.5324 + 1.5488 = 2.0812
+    assert kwh == Decimal(6) and total == Decimal("2.08")
+    assert dyn["zaptec"]["calls"][0]["DetailLevel"] == 1
+    assert dyn["price_calls"][0]["interval"] == 4 and dyn["price_calls"][0]["inclBtw"] == "false"
+    ws = load_workbook(path).active
+    assert ws["E6"].value == "Dynamisch tarief (gem. EUR/kWh)"
+    assert ws["F7"].value == 2.08 and ws["E7"].value == pytest.approx(2.08 / 6)
+    assert ws["A8"].value == "Totaal" and ws["F8"].value == 2.08
+
+
+def test_dynamic_interval_spanning_hours_split_by_time(tmp_path, dyn):
+    # één interval 10:30-11:30, 2 kWh: halve kWh per uur
+    dyn["zaptec"]["items"] = [dyn_item(1, "2026-10-02T10:30:00", "2026-10-02T11:30:00", 2, [
+        ("2026-10-02T10:30:00", 0), ("2026-10-02T11:30:00", 2)])]
+    dyn["prices"] = price_payload("2026-10-02T10:00:00", [0.10, 0.30])
+    _, _, total = lo.run(dyn_cfg(tmp_path, DYNAMIC_MARKUP="0", ENERGY_TAX="0", VAT="0"), 2026, 10, dry_run=True)
+    assert total == Decimal("0.40")  # 1*0.10 + 1*0.30
+
+
+def test_dynamic_fallback_even_distribution_warns(tmp_path, dyn, caplog):
+    dyn["zaptec"]["items"] = [item(1, "2026-10-02T10:00:00", "2026-10-02T12:00:00", 4)]  # geen EnergyDetails
+    dyn["prices"] = price_payload("2026-10-02T10:00:00", [0.10, 0.30])
+    with caplog.at_level("WARNING"):
+        _, _, total = lo.run(dyn_cfg(tmp_path, DYNAMIC_MARKUP="0", ENERGY_TAX="0", VAT="0"), 2026, 10, dry_run=True)
+    assert total == Decimal("0.80")  # 2*0.10 + 2*0.30
+    assert "gelijkmatig verdeeld" in caplog.text
+
+
+def test_dynamic_empty_details_also_falls_back(tmp_path, dyn, caplog):
+    dyn["zaptec"]["items"] = [dyn_item(1, "2026-10-02T10:00:00", "2026-10-02T11:00:00", 3, [])]
+    dyn["prices"] = price_payload("2026-10-02T10:00:00", [0.10])
+    with caplog.at_level("WARNING"):
+        _, _, total = lo.run(dyn_cfg(tmp_path, DYNAMIC_MARKUP="0", ENERGY_TAX="0", VAT="0"), 2026, 10, dry_run=True)
+    assert total == Decimal("0.30") and "gelijkmatig verdeeld" in caplog.text
+
+
+def test_dynamic_missing_price_fails(tmp_path, dyn):
+    dyn["zaptec"]["items"] = [item(1, "2026-10-02T10:00:00", "2026-10-02T12:00:00", 4)]
+    dyn["prices"] = price_payload("2026-10-02T10:00:00", [0.10])  # uur 11 ontbreekt
+    with pytest.raises(lo.PriceError, match="geen marktprijs"):
+        lo.run(dyn_cfg(tmp_path), 2026, 10, dry_run=True)
+    assert not list(tmp_path.glob("*.xlsx"))
+
+
+def test_dynamic_rejects_sub_hour_price_resolution(tmp_path, dyn):
+    dyn["zaptec"]["items"] = [item(1, "2026-10-02T10:00:00", "2026-10-02T11:00:00", 1)]
+    dyn["prices"] = [{"readingDate": "2026-10-02T10:15:00Z", "price": 0.1}]
+    with pytest.raises(lo.PriceError, match="uurprijzen"):
+        lo.run(dyn_cfg(tmp_path), 2026, 10, dry_run=True)
+
+
+def test_dynamic_vat_and_energy_tax(tmp_path, dyn):
+    dyn["zaptec"]["items"] = [item(1, "2026-10-02T10:00:00", "2026-10-02T11:00:00", 10)]
+    dyn["prices"] = price_payload("2026-10-02T10:00:00", [0.08])
+    # (0.08 + 0.0049 + 0.09161) * 1.21 = 0.2135 per kWh -> 2.135 -> afgerond 2.14
+    cfg = dyn_cfg(tmp_path, DYNAMIC_MARKUP="0.0049", ENERGY_TAX="0.09161")
+    _, _, total = lo.run(cfg, 2026, 10, dry_run=True)
+    assert total == Decimal("2.14")
+    # zonder btw
+    _, _, total = lo.run(dyn_cfg(tmp_path, DYNAMIC_MARKUP="0", ENERGY_TAX="0.10", VAT="0"), 2026, 10, dry_run=True)
+    assert total == Decimal("1.80")
