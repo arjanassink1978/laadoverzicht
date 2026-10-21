@@ -188,6 +188,15 @@ def test_dry_run_builds_xlsx_without_mail(tmp_path, api):
     smtp_cls.assert_not_called()
 
 
+def test_xlsx_date_and_time_formats_are_lowercase(tmp_path, api):
+    api["items"] = [item(1, "2026-10-02T06:00:00", "2026-10-02T08:00:00", 10)]
+    (path, _, _), _ = run_with_smtp(make_cfg(tmp_path), api, dry_run=True)
+    ws = load_workbook(path).active
+    assert ws["A7"].number_format == "dd-mm-yyyy"
+    assert ws["B7"].number_format == "hh:mm"
+    assert ws["C7"].number_format == "hh:mm"
+
+
 def test_main_dry_run_cli(tmp_path, api, monkeypatch):
     api["items"] = [item(1, "2026-10-02T06:00:00", "2026-10-02T08:00:00", 10)]
     monkeypatch.setattr(lo, "load_config", lambda: make_cfg(tmp_path))

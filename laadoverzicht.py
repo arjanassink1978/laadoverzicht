@@ -190,9 +190,9 @@ def build_xlsx(cfg, year, month, sessions, path):
     r = header_row
     for s in rows:
         r += 1
-        ws.cell(r, 1, s["start"].date()).number_format = "DD-MM-YYYY"
-        ws.cell(r, 2, s["start"].time().replace(microsecond=0, tzinfo=None)).number_format = "HH:MM"
-        ws.cell(r, 3, s["end"].time().replace(microsecond=0, tzinfo=None)).number_format = "HH:MM"
+        ws.cell(r, 1, s["start"].date()).number_format = "dd-mm-yyyy"
+        ws.cell(r, 2, s["start"].time().replace(microsecond=0, tzinfo=None)).number_format = "hh:mm"
+        ws.cell(r, 3, s["end"].time().replace(microsecond=0, tzinfo=None)).number_format = "hh:mm"
         ws.cell(r, 4, float(s["kwh"])).number_format = "0.00"
         ws.cell(r, 5, float(cfg["rate"])).number_format = '"€" 0.00000'
         ws.cell(r, 6, float(s["cost"])).number_format = '"€" #,##0.00'
